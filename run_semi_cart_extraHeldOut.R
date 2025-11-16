@@ -6,7 +6,7 @@ library(rpart.plot)
 
 source("./utils.R")
 
-collect_exp_res = function(tree_model, gt_te_test, d_test){
+collect_exp_res = function(tree_model, gt_te_test, d_test, d_val){
   # What to collect: 
   # - The accuracy of the max subgroup and all other subgroups, in terms of individual treatment effects
   # - The accuracy of the max subgroup and all other subgroups, in terms of the subgroup treatment effect
@@ -32,9 +32,11 @@ collect_exp_res = function(tree_model, gt_te_test, d_test){
     
     if(is.na(rs)){
       bool_test = rep(T, nrow(d_test))
+      bool_val = rep(T, nrow(d_val))
     } else{
       rs_vec = strsplit(rs, split="&")[[1]]
       bool_test = rep(T, nrow(d_test))
+      bool_val = rep(T, nrow(d_val))
       for(j in 1:length(rs_vec)){
         r = rs_vec[j]
         
@@ -51,9 +53,12 @@ collect_exp_res = function(tree_model, gt_te_test, d_test){
           }
           if(length(values)==1){
             bool_test = bool_test & (d_test[[feature]] == values[1])
+            bool_val = bool_val & (d_val[[feature]] == values[1])
           } else{
             bool_test = bool_test & (d_test[[feature]] >= values[1] & 
                                        d_test[[feature]] <= values[2])  
+            bool_val = bool_val & (d_val[[feature]] >= values[1] &
+                                       d_val[[feature]] <= values[2])
           }
         } else{
           feature_value = strsplit(r, operator)[[1]]
@@ -70,8 +75,19 @@ collect_exp_res = function(tree_model, gt_te_test, d_test){
             ">=" = d_test[[feature]] >= value,
             "<=" = d_test[[feature]] <= value,
             "=" = d_test[[feature]] == value          
-            )
+          )
+          bool_val = bool_val & switch(
+            operator,
+            ">" = d_val[[feature]] > value,
+            "<" = d_val[[feature]] < value,
+            ">=" = d_val[[feature]] >= value,
+            "<=" = d_val[[feature]] <= value,
+            "=" = d_val[[feature]] == value          
+          )
           if(any(is.na(bool_test))){
+            browser()
+          }
+          if(any(is.na(bool_val))){
             browser()
           }
         }
@@ -79,36 +95,43 @@ collect_exp_res = function(tree_model, gt_te_test, d_test){
     }
     
     tryCatch({
-    if((sum(bool_test & (d_test$treatment == 1))==0) | 
-       (sum(bool_test & (d_test$treatment == 0))==0)){
-      tree_treatment_effects[i] = NA
-      next
-    }
+      if((sum(bool_test & (d_test$treatment == 1))==0) |
+         (sum(bool_test & (d_test$treatment == 0))==0)){
+        tree_treatment_effects[i] = NA
+        next
+      }
+      
+      if((sum(bool_val & (d_val$treatment == 1))==0) |
+         (sum(bool_val & (d_val$treatment == 0))==0)){
+        tree_treatment_effects[i] = NA
+        next
+      }
     }, error = function(e){
       browser()
     }
-    ) 
+    )
     
-    te = mean(d_test$Y[bool_test & (d_test$treatment == 1)]) - mean(d_test$Y[bool_test & (d_test$treatment == 0)])
-    tree_treatment_effects[i] = te
+    te_test_estimated = mean(d_test$Y[bool_test & (d_test$treatment == 1)]) - mean(d_test$Y[bool_test & (d_test$treatment == 0)])
+    te_val_estimated = mean(d_val$Y[bool_val & (d_val$treatment == 1)]) - mean(d_val$Y[bool_val & (d_val$treatment == 0)])
+    tree_treatment_effects[i] = te_val_estimated
     tree_treatment_effects_var[i] = var(gt_te_test[bool_test])
-    diff_average[i] = te - mean(gt_te_test[bool_test])
-    diff_individual[[i]] = te - gt_te_test[bool_test] 
+    diff_average[i] = te_val_estimated - mean(gt_te_test[bool_test])
+    diff_individual[[i]] = te_val_estimated - gt_te_test[bool_val] 
     
     tryCatch({
-      if(tree_max_te < te){
-          tree_max_te = te
-          tree_max_sg_bool = bool_test  
+      if(tree_max_te < te_val_estimated){
+        tree_max_te = te_val_estimated
+        tree_max_sg_bool = bool_test  
       }
-      }, error= function(e){
-        browser()
-      }
+    }, error= function(e){
+      browser()
+    }
     )
   }
   if(all(is.infinite(tree_treatment_effects))){
-    te_default = mean(d_test$Y[d_test$treatment == 1]) - mean(d_test$Y[d_test$treatment == 0])
+    te_default = mean(d_val$Y[d_val$treatment == 1]) - mean(d_val$Y[d_val$treatment == 0])
     tree_treatment_effects = rep(te_default, nrow(tree_rules))
-    tree_max_sg_bool = rep(TRUE, nrow(d_test))
+    tree_max_sg_bool = rep(TRUE, nrow(d_val))
   }
   which_max = which.max(tree_treatment_effects)
   return(list(
@@ -118,7 +141,8 @@ collect_exp_res = function(tree_model, gt_te_test, d_test){
     subgroup_diff_individual = diff_individual,
     max_subgroup_treatment_effect = tree_treatment_effects[which_max],
     which_max = which_max,
-    max_subgroup_gt_treatment_effct = mean(gt_te_test[tree_max_sg_bool])
+    max_subgroup_gt_treatment_effct = mean(gt_te_test[tree_max_sg_bool]),
+    diff_gt_and_estimation = mean(gt_te_test[tree_max_sg_bool]) - tree_treatment_effects[which_max]
   ))
 }
 
@@ -166,12 +190,18 @@ for(i in 1:length(files)){
   
   # train/test split
   set.seed(1)
-  train_indices = sample(1:nrow(d), size = 0.5 * nrow(d), replace = FALSE)
+  train_indices = sample(1:nrow(d), size = 0.3 * nrow(d), replace = FALSE)
+  val_indices = sample(setdiff(1:nrow(d), train_indices), 
+                        size = 0.3 * nrow(d), 
+                        replace = FALSE)
+  test_indices = setdiff(1:nrow(d), c(train_indices, val_indices))
+  
   
   d_train = d[train_indices, ]
-  d_test = d[-train_indices, ]
+  d_val = d[val_indices, ]
+  d_test = d[test_indices, ]
   
-  gt_te_test = gt_te[-train_indices]
+  gt_te_test = gt_te[test_indices]
   
   # Fit a decision tree model
   # tree_model <- rpart(
@@ -180,13 +210,13 @@ for(i in 1:length(files)){
   #   control = rpart.control(cp = 0.02)
   # )
   tree_model <- rpart(
-      Y ~ .,
-      data = d_train)
+    Y ~ .,
+    data = d_train)
   
   best_cp = tree_model$cptable[which.min(tree_model$cptable[, "xerror"]), "CP"]
   tree_model <- prune(tree_model, cp = best_cp)
   
-  exp_res = collect_exp_res(tree_model, gt_te_test, d_test)
+  exp_res = collect_exp_res(tree_model, gt_te_test, d_test, d_val)
   res_df = rbind(res_df, data.frame(
     dataset = basename(data_file),
     subgroup_treatment_effects = I(list(exp_res$subgroup_treatment_effects)),
@@ -195,7 +225,8 @@ for(i in 1:length(files)){
     subgroup_diff_individual = I(list(exp_res$subgroup_diff_individual)),
     max_subgroup_treatment_effect = exp_res$max_subgroup_treatment_effect,
     which_max = exp_res$which_max, 
-    max_subgroup_gt_treatment_effct = exp_res$max_subgroup_gt_treatment_effct
+    max_subgroup_gt_treatment_effct = exp_res$max_subgroup_gt_treatment_effct,
+    diff_gt_and_estimate = exp_res$diff_gt_and_estimation
   ))
   
   subgroup_coverage = sapply(exp_res$subgroup_diff_individual, length)
@@ -253,11 +284,11 @@ for(i in 1:length(files)){
 # # round up the numbers
 
 write.csv(res_df,
-          file = paste0("./FINAL_FINAL_semi_cart_results.csv"),
+          file = paste0("./CameraReady_semi_cart_results.csv"),
           row.names = FALSE,
           quote = TRUE)
 write.csv(res_df_summary,
-          file = paste0("./FINAL_FINAL_semi_cart_results.csv"),
+          file = paste0("./CameraReady_semi_cart_results.csv"),
           row.names = FALSE,
           quote = TRUE)
 

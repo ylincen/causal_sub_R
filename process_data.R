@@ -119,7 +119,7 @@ process_acic2016 = function(){
   }
 }
 
-process_acic2016()
+# process_acic2016()
 
 # process_IBM_scaling_all()
-# process_ihdp()
+process_ihdp()

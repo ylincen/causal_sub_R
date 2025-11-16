@@ -7,9 +7,10 @@ simulate1 = function(n, iter){
   
   # when x1 > 1 and T = 1, P(Y=1) = 0.8
   # when x1 < 1 and T = 0, P(Y=1) = 0.75
-  # otherwise, P(Y=1) = 0.5
+  # otherwise, P(Y=1) = 0.2
   
   Y = rep(0, n)
+  
   Y[(X1 > 1) & (Treatment == 1)] = rbinom(sum(X1 > 1 & Treatment == 1), 1, 0.8)
   Y[(X1 < -1) & (Treatment == 0)] = rbinom(sum(X1 < -1 & Treatment == 0), 1, 0.75)
   otherwise_bool = !(((X1 > 1) & (Treatment == 1)) | ((X1 < -1) & (Treatment == 0)))
@@ -98,8 +99,56 @@ simulate_long_rule = function(n, iter){
 }
 
 
+simulate_hidden_piecewise <- function(n, iter, alphaU = 1.0, gamma = 1.0, debug = FALSE){
+  set.seed(iter)
+  X1 <- rnorm(n)
+  X2 <- rnorm(n)
+  U  <- rnorm(n)
+  
+  # Confounded treatment
+  pT <- plogis(-0.1 + 0.7*X1 + 0.3*X2 + alphaU*U)
+  T  <- rbinom(n, 1, pT)
+  
+  base_p <- rep(0.2, n)
+  base_p[(X1 > 1) & (T == 1)]  <- 0.8
+  base_p[(X1 < -1) & (T == 0)] <- 0.5
+  
+  # Shift piecewise probs on the logit scale by hidden U
+  pY <- plogis(qlogis(base_p) + gamma*U)
+  Y  <- rbinom(n, 1, pY)
+  
+  df <- data.frame(X1 = X1, X2 = X2, T = T, Y = Y)
+  if (debug) df$U <- U
+  df
+}
+
+
 ns = seq(500,5000,500)
 iters = 1:50
+
+hidden_simulators = list(simulate_hidden_piecewise=simulate_hidden_piecewise)
+save_path = "./hidden_simulation/"
+for(simulator_name in names(hidden_simulators)) {
+  # if(simulator_name != "simulate_long_rule") next()
+  simulator = hidden_simulators[[simulator_name]]
+  save_path_ = paste0(save_path, simulator_name, "/")
+  # create dir
+  if(!dir.exists(save_path_)) {
+    dir.create(save_path_, recursive = TRUE)
+  }
+  for(n in ns) {
+    for(iter in iters) {
+      cat("Processing simulator:", simulator_name, 
+          "n:", n, "iter:", iter, "\n")
+      d = simulator(n, iter)
+      write.csv(d, 
+                file = paste0(save_path_, "n_", n, "_iter_", iter, ".csv"), 
+                row.names = FALSE, 
+                quote = FALSE)
+    }
+  }
+}
+
 simulators = list(
   simulate1 = simulate1,
   simulate_imbalance_treatment = simulate_imbalance_treatment,

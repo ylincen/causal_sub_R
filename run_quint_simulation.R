@@ -1,5 +1,5 @@
-rm(list=ls())
-require(aVirtualTwins)
+rm(list = ls())
+library(quint)
 
 source("./util_synthetic.R")
 # load the datasets
@@ -9,12 +9,37 @@ simulator_names = c(
   "simulate_long_rule"
 )
 
+get_rules <- function(df) {
+  # split the “2,3” text into integer vectors
+  kids <- strsplit(df$childnodes, ",")
+  names(kids) <- df$parentnode
+  
+  rules <- list()
+  walk_tree <- function(node, path = character()) {
+    row <- match(node, df$parentnode)          # where does this node split?
+    
+    if (is.na(row)) {                          # no split ⇒ we reached a leaf
+      rules[[length(rules) + 1]] <<- paste(path, collapse = " & ")
+      return(invisible())
+    }
+    
+    v  <- df$splittingvar[row]
+    sp <- df$truesplitpoint[row]
+    ch <- as.integer(kids[[row]])              # left, right
+    
+    walk_tree(ch[1], c(path, sprintf("%s < %s", v, sp)))
+    walk_tree(ch[2], c(path, sprintf("%s >= %s", v, sp)))
+  }
+  
+  walk_tree(1)                                 # start at the root
+  unlist(rules, use.names = FALSE)
+}
 
 # simulate low signal data
 num_simulators = length(simulator_names)
 ns = seq(1000,5000,500)
 iters = 1:50
-num_exp_res = length(ns) * length(iters) * num_simulators
+num_exp_res = length(ns) * length(iters)
 
 
 gt_te_init = rep(0, num_exp_res)
@@ -41,18 +66,11 @@ full_results = data.frame(
 for(simulator_name in simulator_names){
   # if(simulator_name != "simulate_long_rule") next()
   for(n in ns){
-    cat("running VT on simulator: ", simulator_name, " with n = ", n, "\n")
+    cat("running QUINT on simulator: ", simulator_name, " with n = ", n, "\n")
     for(iter_ in iters){
+      cat("iteration: ", iter_, "\n")
       counter = counter + 1
       set.seed(counter)
-      
-      # ## For debugging: 
-      # if((n != 1000) | (simulator_name != "simulate_long_rule") | (iter_ !=6)){
-      #   next
-      # }
-      # ## For debugging above.
-      ## DEBUG Conclusion: 
-      # The warning is fine. So 
       
       file_path = paste0("./new_simulation/", simulator_name, "/n_", n, "_iter_", iter_, ".csv")
       d = read.csv(file_path)
@@ -61,25 +79,18 @@ for(simulator_name in simulator_names){
       d_train = d[train_indices, ]
       d_test = d[-train_indices, ]
       
-      tree_type = ifelse(length(unique(d$Y)) > 2, "regression", "class")
-      vt.obj <- vt.data(dataset         = d_train,
-                        outcome.field   = "Y",
-                        treatment.field = "T",
-                        interactions    = TRUE)
-      # Run the VT method
-      ## First step : create random forest model
-      vt.for <- vt.forest(forest.type  = "one",
-                          vt.data      = vt.obj,
-                          interactions = TRUE,
-                          ntree        = 500)
-      ## Second step : find rules in data 
-      vt.trees <- vt.tree(tree.type = tree_type,
-                          vt.difft  = vt.for, 
-                          threshold = quantile(vt.for$difft, seq(.5,.8,.1)),
-                          maxdepth  = ncol(d) - 2)
-      ## Print results
-      vt.sbgrps <- vt.subgroups(vt.trees)
+      # fit the quint model
+      # sink(tempfile())
+      quint_model = quint(formula = Y ~ T | .,
+                          data=d_train)
+      quint_model_pruned <- prune(quint_model)
+      # sink()
       
+      if(is.null(quint_model_pruned$si)){
+        subgroups = NULL
+      } else{
+        subgroups = get_rules(quint_model_pruned$si)  
+      }
       # get the subgroup analysis results
       ## initialize 
       max_te = -Inf
@@ -88,59 +99,55 @@ for(simulator_name in simulator_names){
       gt_te = mean(d_test$Y[gt_bool & (d_test$T == 1)]) - 
         mean(d_test$Y[gt_bool & (d_test$T == 0)])
       
-      
-      # default TE to use when a subgroup has no treated or no control units
-      default_te = mean(d_test$Y[d_test$T == 1]) - 
-        mean(d_test$Y[d_test$T == 0])
-      if (!is.finite(default_te)) default_te = 0  # ultra-robust fallback
-      
-      
-      treatment_effects = rep(-Inf, length(vt.sbgrps$Subgroup))
-      for(i in 1:length(vt.sbgrps$Subgroup)){
-        sg = vt.sbgrps$Subgroup[i]
-        items = strsplit(sg, " & ")[[1]]
+
+      treatment_effects = rep(-Inf, length(subgroups))
+      if(is.null(subgroups)){
         bool_test = rep(T, nrow(d_test))
-        for(j in 1:length(items)){
-          item = items[j]
-          if(grepl(">", item)){
-            feature_value = strsplit(item, ">=")[[1]]
-            operator = ">="
-          } else {
-            feature_value = strsplit(item, "< ")[[1]]
-            operator = "<"
-          }
-          feature = feature_value[1]
-          value = as.numeric(feature_value[2])
-          if(operator == ">="){
-            bool_test = bool_test & (d_test[[feature]] >= value)
-          } else {
-            bool_test = bool_test & (d_test[[feature]] < value)
-          }
-        }
-        
-        treated_idx  = bool_test & (d_test$T == 1)
-        control_idx  = bool_test & (d_test$T == 0)
-        
-        # >>> Here is your "default TE" logic <<<
-        if (sum(treated_idx) == 0 || sum(control_idx) == 0) {
-          subgroup_te = default_te
-        } else {
-          subgroup_te = mean(d_test$Y[treated_idx]) - mean(d_test$Y[control_idx])
-        }
-        
-        treatment_effects[i] = subgroup_te
-        
-        # subgroup_te = mean(d_test$Y[bool_test & d_test$T == 1]) - 
-        #   mean(d_test$Y[bool_test & d_test$T == 0])
-        # treatment_effects[i] = subgroup_te
-        if(is.finite(subgroup_te) && subgroup_te > max_te){
+        subgroup_te = mean(d_test$Y[bool_test & d_test$T == 1]) - 
+          mean(d_test$Y[bool_test & d_test$T == 0])
+        treatment_effects = subgroup_te
+        if(subgroup_te > max_te){
           max_te = subgroup_te
           max_subgroup_jaccard = sum(bool_test & gt_bool) / 
             sum(bool_test | gt_bool)
           abs_error_te = abs(max_te - gt_te)
           max_sg_bool = bool_test
         }
+      } else{
+        for(i in 1:length(subgroups)){
+          sg = subgroups[i]
+          items = strsplit(sg, " & ")[[1]]
+          bool_test = rep(T, nrow(d_test))
+          for(j in 1:length(items)){
+            item = items[j]
+            if(grepl(">=", item)){
+              feature_value = strsplit(item, " >= ")[[1]]
+              operator = ">="
+            } else {
+              feature_value = strsplit(item, " < ")[[1]]
+              operator = "<"
+            }
+            feature = feature_value[1]
+            value = as.numeric(feature_value[2])
+            if(operator == ">="){
+              bool_test = bool_test & (d_test[[feature]] >= value)
+            } else {
+              bool_test = bool_test & (d_test[[feature]] < value)
+            }
+          }
+          subgroup_te = mean(d_test$Y[bool_test & d_test$T == 1]) - 
+            mean(d_test$Y[bool_test & d_test$T == 0])
+          treatment_effects[i] = subgroup_te
+          if(subgroup_te > max_te){
+            max_te = subgroup_te
+            max_subgroup_jaccard = sum(bool_test & gt_bool) / 
+              sum(bool_test | gt_bool)
+            abs_error_te = abs(max_te - gt_te)
+            max_sg_bool = bool_test
+          }
+        }
       }
+      
       # collect the results
       which_max = which.max(treatment_effects)
       jaccard_similarity = sum(gt_bool & max_sg_bool) / sum(gt_bool | max_sg_bool)
@@ -166,8 +173,8 @@ for(simulator_name in simulator_names){
     full_results$max_te = round(full_results$max_te, 3)
     full_results$gt_te = round(full_results$gt_te, 3)
     full_results$diff_te = round(full_results$diff_te, 3)
-    write.csv(full_results, "res_vt_simulation_CR.csv", row.names = FALSE)
     
+    write.csv(full_results, "res_quint_simulation_CameraReady.csv", row.names = FALSE)
   }
 }
 
@@ -182,4 +189,4 @@ summary_res = full_res_dt[, .(
   mean_diff_te = mean(diff_te)
 ), by = .(simulator_name, n)]
 
-write.csv(summary_res, "summary_res_VT_simulations_CR.csv", row.names = FALSE)
+write.csv(summary_res, "summary_res_quint_simulations_CameraReady.csv", row.names = FALSE)

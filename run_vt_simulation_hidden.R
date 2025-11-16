@@ -3,18 +3,15 @@ require(aVirtualTwins)
 
 source("./util_synthetic.R")
 # load the datasets
-simulator_names = c(
-  "simulate1",
-  "simulate_imbalance_treatment",
-  "simulate_long_rule"
-)
+simulator_names = c("simulate_hidden_piecewise")
+
 
 
 # simulate low signal data
 num_simulators = length(simulator_names)
 ns = seq(1000,5000,500)
 iters = 1:50
-num_exp_res = length(ns) * length(iters) * num_simulators
+num_exp_res = length(ns) * length(iters)
 
 
 gt_te_init = rep(0, num_exp_res)
@@ -29,11 +26,7 @@ full_results = data.frame(
   jaccard = jaccard,
   max_te = max_te,
   gt_te = gt_te_init,
-  diff_te = rep(0, num_exp_res),
-  gt_te_of_gt_subgroup = rep(0, num_exp_res),
-  estimated_te_of_gt_subgroup = rep(0, num_exp_res),
-  gt_te_of_learned_subgroup = rep(0, num_exp_res),
-  estimated_te_of_learned_subgroup = rep(0, num_exp_res)
+  diff_te = rep(0, num_exp_res)
 )
 
 
@@ -54,7 +47,7 @@ for(simulator_name in simulator_names){
       ## DEBUG Conclusion: 
       # The warning is fine. So 
       
-      file_path = paste0("./new_simulation/", simulator_name, "/n_", n, "_iter_", iter_, ".csv")
+      file_path = paste0("./hidden_simulation/", simulator_name, "/n_", n, "_iter_", iter_, ".csv")
       d = read.csv(file_path)
       
       train_indices = sample(1:n, n * 0.5, replace = FALSE)
@@ -88,16 +81,9 @@ for(simulator_name in simulator_names){
       gt_te = mean(d_test$Y[gt_bool & (d_test$T == 1)]) - 
         mean(d_test$Y[gt_bool & (d_test$T == 0)])
       
-      
-      # default TE to use when a subgroup has no treated or no control units
-      default_te = mean(d_test$Y[d_test$T == 1]) - 
-        mean(d_test$Y[d_test$T == 0])
-      if (!is.finite(default_te)) default_te = 0  # ultra-robust fallback
-      
-      
       treatment_effects = rep(-Inf, length(vt.sbgrps$Subgroup))
       for(i in 1:length(vt.sbgrps$Subgroup)){
-        sg = vt.sbgrps$Subgroup[i]
+        sg = vt.sbgrps$Subgroup[1]
         items = strsplit(sg, " & ")[[1]]
         bool_test = rep(T, nrow(d_test))
         for(j in 1:length(items)){
@@ -117,23 +103,10 @@ for(simulator_name in simulator_names){
             bool_test = bool_test & (d_test[[feature]] < value)
           }
         }
-        
-        treated_idx  = bool_test & (d_test$T == 1)
-        control_idx  = bool_test & (d_test$T == 0)
-        
-        # >>> Here is your "default TE" logic <<<
-        if (sum(treated_idx) == 0 || sum(control_idx) == 0) {
-          subgroup_te = default_te
-        } else {
-          subgroup_te = mean(d_test$Y[treated_idx]) - mean(d_test$Y[control_idx])
-        }
-        
+        subgroup_te = mean(d_test$Y[bool_test & d_test$T == 1]) - 
+          mean(d_test$Y[bool_test & d_test$T == 0])
         treatment_effects[i] = subgroup_te
-        
-        # subgroup_te = mean(d_test$Y[bool_test & d_test$T == 1]) - 
-        #   mean(d_test$Y[bool_test & d_test$T == 0])
-        # treatment_effects[i] = subgroup_te
-        if(is.finite(subgroup_te) && subgroup_te > max_te){
+        if(subgroup_te > max_te){
           max_te = subgroup_te
           max_subgroup_jaccard = sum(bool_test & gt_bool) / 
             sum(bool_test | gt_bool)
@@ -145,28 +118,16 @@ for(simulator_name in simulator_names){
       which_max = which.max(treatment_effects)
       jaccard_similarity = sum(gt_bool & max_sg_bool) / sum(gt_bool | max_sg_bool)
       
-      gt_te_theoretical_per_sample = gt_te_per_sample(d_test, simulator_name)
-      gt_te_of_gt_subgroup_ = mean(gt_te_theoretical_per_sample[gt_bool])
-      gt_te_of_learned_subgroup_ = mean(gt_te_theoretical_per_sample[max_sg_bool])
-      estimated_te_of_learned_subgroup_ = mean(d_test$Y[max_sg_bool & (d_test$T == 1)]) - 
-        mean(d_test$Y[max_sg_bool & (d_test$T == 0)])
-      estimated_te_of_gt_subgroup_ = mean(d_test$Y[gt_bool & (d_test$T == 1)]) -
-        mean(d_test$Y[gt_bool & (d_test$T == 0)])
-      
       full_results[counter, ] = list(simulator_name, n, iter_, jaccard_similarity, 
                                      treatment_effects[which_max], gt_te,
-                                     diff_te = abs(treatment_effects[which_max] - gt_te),
-                                     gt_te_of_gt_subgroup = gt_te_of_gt_subgroup_,
-                                     gt_te_of_learned_subgroup = gt_te_of_learned_subgroup_,
-                                     estimated_te_of_learned_subgroup = estimated_te_of_learned_subgroup_,
-                                     estimated_te_of_gt_subgroup = estimated_te_of_gt_subgroup_)
+                                     diff_te = abs(treatment_effects[which_max] - gt_te))
     }
     full_results$jaccard = round(full_results$jaccard, 3)
     full_results$max_te = round(full_results$max_te, 3)
     full_results$max_te = round(full_results$max_te, 3)
     full_results$gt_te = round(full_results$gt_te, 3)
     full_results$diff_te = round(full_results$diff_te, 3)
-    write.csv(full_results, "res_vt_simulation_CR.csv", row.names = FALSE)
+    write.csv(full_results, "res_vt_simulation_hidden.csv", row.names = FALSE)
     
   }
 }
@@ -182,4 +143,4 @@ summary_res = full_res_dt[, .(
   mean_diff_te = mean(diff_te)
 ), by = .(simulator_name, n)]
 
-write.csv(summary_res, "summary_res_VT_simulations_CR.csv", row.names = FALSE)
+write.csv(summary_res, "summary_res_VT_simulations_hidden.csv", row.names = FALSE)

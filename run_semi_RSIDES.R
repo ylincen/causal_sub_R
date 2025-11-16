@@ -135,6 +135,10 @@ for(i in 1:length(files)){
   #   next
   # }
   data_file = files[i]
+  # skip if not IHDP
+  # if(!grepl("IHDP", data_file)){
+  #   next
+  # }
   cat("running RSIDES on semi-synthetic dataset: ", data_file, "\n")
   
   read_and_process_data_res = read_and_process_semi_data(data_file)
@@ -226,14 +230,22 @@ for(i in 1:length(files)){
       exp_res$subgroup_diff_average[exp_res$which_max],
     max_subgroup_gt_treatment_effct = exp_res$max_subgroup_gt_treatment_effct
   ))
-  if(i %% 10 == 0){
+  if((i %% 10 == 0) | (i == length(files))) {
     write.csv(res_df,
-              file = paste0("./semi_rsides_results_full.csv"),
+              file = paste0("./FINAL_semi_rsides_results_full.csv"),
               row.names = FALSE,
               quote = TRUE)
     write.csv(res_df_summary,
-              file = paste0("./semi_rsides_results.csv"),
+              file = paste0("./FINAL_semi_rsides_results.csv"),
               row.names = FALSE,
               quote = TRUE)
   }
+  # write.csv(res_df, 
+  #           file = paste0("./semi_rsides_results_full_IHDP.csv"), 
+  #           row.names = FALSE, 
+  #           quote = TRUE)
+  # write.csv(res_df_summary,
+  #           file = paste0("./semi_rsides_results_IHDP.csv"), 
+  #           row.names = FALSE, 
+  #           quote = TRUE)
 }
